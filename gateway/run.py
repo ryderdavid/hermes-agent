@@ -3335,7 +3335,10 @@ class GatewayRunner(
         return self._delivery_adapter_for(source)
 
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.
-    _busy_input_mode: str = "interrupt"
+    # Fork default (ryderdavid): "steer" — a message sent while a turn runs lands as
+    # guidance in that turn instead of interrupting it. Runtime override:
+    # display.busy_input_mode in config.yaml / HERMES_GATEWAY_BUSY_INPUT_MODE.
+    _busy_input_mode: str = "steer"
     _busy_text_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _restart_after_turn_timeout: float = DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
