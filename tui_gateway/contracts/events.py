@@ -673,6 +673,62 @@ for _name, _doc in (
     event(_name, SubagentEventPayload, doc=_doc)
 
 
+class ThreadMessageKind(WireEnum):
+    update = "update"
+    question = "question"
+
+
+class SubagentMessagePayload(Payload):
+    """``tools/async_delegation_messages.py::thread_message_annotation``: a running child's ``message_parent``
+    delivered as a parent turn. The same object is that turn's user-row ``display_metadata`` (its
+    ``display_kind`` is ``async_delegation_message``)."""
+
+    type: str  # always "async_delegation_message"
+    display_text: str
+    message_id: str
+    kind: ThreadMessageKind
+    text: str
+    subagent_id: str
+    delegation_id: str
+    goal: str = ""
+    sent_at: float
+    merged_count: int | None = None  # update: how many held updates this delivery merges (absent = 1)
+    question_id: str | None = None  # question only
+    options: list[str] | None = None  # question only
+    timeout_seconds: float | None = None  # question only: the child's wait limit
+
+
+event("subagent.message", SubagentMessagePayload,
+      doc="A running child's interim update or question was delivered as a new parent turn.")
+
+
+class ThreadQuestionStatus(WireEnum):
+    pending = "pending"
+    answered = "answered"
+    expired = "expired"
+    cancelled = "cancelled"
+
+
+class SubagentQuestionPayload(Payload):
+    """Lifecycle of one child question: ``pending`` the moment it is asked (before its parent turn is
+    delivered), then exactly one of ``answered`` / ``expired`` / ``cancelled`` (the child was stopped)."""
+
+    subagent_id: str
+    question_id: str
+    status: ThreadQuestionStatus
+    goal: str = ""
+    text: str | None = None  # pending only
+    options: list[str] | None = None  # pending only
+    asked_at: float | None = None  # pending only
+    expires_at: float | None = None  # pending only
+    answered_by: str | None = None  # answered only: "user" | "coordinator"
+    answer: str | None = None  # answered only
+
+
+event("subagent.question", SubagentQuestionPayload,
+      doc="A child asked its parent a question, or that question was answered, expired or cancelled.")
+
+
 # ── MoA ───────────────────────────────────────────────────────────────────────────────────────
 
 

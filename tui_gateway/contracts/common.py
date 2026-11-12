@@ -106,6 +106,11 @@ class SessionLiveInfo(OpenModel):
     system_prompt: str | None = None
     credential_warning: str | None = None
     lazy: bool | None = None
+    # Coordinator threads (docs/coordinator-threads.md): the session's ``session.mode.set`` flag and the
+    # feature keys this gateway serves (``threads.roster``, ``threads.steer``, ``threads.messages``,
+    # ``threads.continue``, ``threads.approvals``, ``coordinator_mode``). Absent on older gateways.
+    coordinator_mode: bool | None = None
+    capabilities: list[str] | None = None
 
 
 class StoredSessionRow(OpenModel):

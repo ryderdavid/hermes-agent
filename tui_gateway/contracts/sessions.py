@@ -383,6 +383,24 @@ method("session.cwd.set", params=SessionCwdSetParams, result=SessionCwdSetResult
        doc="Change a live, idle session's working directory.")
 
 
+# ── coordinator mode ──────────────────────────────────────────────────────────────────────────
+
+
+class SessionModeSetParams(SessionParams):
+    coordinator: bool
+
+
+class SessionModeSetResult(Result):
+    coordinator: bool
+    pending: bool = False  # True: the chat has no stored row yet; the flag is written on its first turn
+
+
+method("session.mode.set", params=SessionModeSetParams, result=SessionModeSetResult,
+       doc="Set/clear coordinator mode for one session: the main agent answers directly and hands long work to "
+           "background threads. Reported as ``session.info.coordinator_mode``; survives resume. Clearing it "
+           "never touches children that are already running.")
+
+
 # ── live-session lifecycle ────────────────────────────────────────────────────────────────────
 
 

@@ -260,6 +260,22 @@ SESSION_SEARCH_GUIDANCE = (
 # (agent/context_compressor_tail.py::with_skill_safety_rule): fresh sessions no longer pay for it.
 SKILLS_GUIDANCE = "When you work out a non-trivial workflow, record it with skill_manage for future reuse."
 
+# Appended to a session's ephemeral system prompt while its coordinator flag is set
+# (``session.mode.set``, tui_gateway/methods_threads.py). Byte-stable: the toggle strips it by value.
+COORDINATOR_MODE_GUIDANCE = (
+    "## Coordinator mode\n"
+    "This chat is in coordinator mode: you are the user's point of contact and background threads do the "
+    "long work.\n"
+    "- Answer the user directly, in this turn. Never make them wait on work you could hand off.\n"
+    "- Send multi-step or long-running work to background threads with delegate_task (one self-contained "
+    "task per independent job), say in one or two lines what each thread is doing, then end your turn. "
+    "Quick lookups and small edits you still do yourself.\n"
+    "- Results, interim updates and questions from threads arrive later as their own messages. When one "
+    "arrives, tell the user what it means for them; do not poll or wait for threads.\n"
+    "- Keep the user informed: when asked, or when a thread reports, say which threads are running, what "
+    "each is doing and what is still outstanding (delegate_task(action='list') shows live threads)."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from the shared board at `~/.hermes/kanban.db`. Your task id is in "

@@ -11,7 +11,7 @@ method = _registry.method
 
 _SUBAGENT_SNAPSHOT_FIELDS = (
     "subagent_id", "parent_id", "depth", "goal", "delegation_id", "model",
-    "started_at", "status", "tool_count", "last_tool", "accepting_steer",
+    "started_at", "status", "tool_count", "last_tool", "accepting_steer", "pending_question",
 )
 _SUBAGENT_TAIL_BYTES = 16384
 
@@ -61,7 +61,16 @@ def _(rid, params):
         "subagents": [{**{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS},
                        "child_session_id": _child_session_id(r)} for r in live],
         "delegations": _failed_delegations(session_id, owner),
+        "queued": _queued_continuations(owner),
     })
+
+
+def _queued_continuations(owner):
+    """This session's ``subagent.continue`` follow-ups still waiting for a background slot."""
+    from tools.delegate_tool_continue import queued_continuations
+
+    agent = owner.get("agent")
+    return queued_continuations(agent) if agent is not None else []
 
 
 def _child_session_id(record):

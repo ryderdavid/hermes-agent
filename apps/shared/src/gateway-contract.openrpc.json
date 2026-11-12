@@ -3553,6 +3553,24 @@
       }
     },
     {
+      "name": "session.mode.set",
+      "summary": "Set/clear coordinator mode for one session: the main agent answers directly and hands long work to background threads. Reported as ``session.info.coordinator_mode``; survives resume. Clearing it never touches children that are already running.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionModeSetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionModeSetResult"
+        }
+      }
+    },
+    {
       "name": "session.most_recent",
       "summary": "Most recent human-facing session; errors fold into a null session_id.",
       "params": [
@@ -4093,6 +4111,24 @@
       }
     },
     {
+      "name": "subagent.continue",
+      "summary": "Run a FINISHED child of this conversation again with a follow-up, on its own stored history and under the same subagent_id; it takes a background slot and reports back like a first run.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SubagentContinueParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SubagentContinueResult"
+        }
+      }
+    },
+    {
       "name": "subagent.interrupt",
       "summary": "Hard-interrupt one owned child; ``found`` is false when it already finished.",
       "params": [
@@ -4125,6 +4161,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SubagentListResult"
+        }
+      }
+    },
+    {
+      "name": "subagent.reply",
+      "summary": "Answer the question a child of this conversation is waiting on. The first reply wins; a later one (or one for an expired question) answers error 4090 naming how the question ended.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SubagentReplyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SubagentReplyResult"
         }
       }
     },
@@ -4991,6 +5045,16 @@
             ],
             "default": null,
             "title": "Owner Agent Session Id"
+          },
+          "pending_question": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pending Question"
           }
         },
         "required": [
@@ -5545,6 +5609,30 @@
             ],
             "default": null,
             "title": "Gateway Session Id"
+          },
+          "subagent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Subagent Id"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Goal"
           }
         },
         "required": [
@@ -15976,6 +16064,15 @@
         ],
         "title": "ContextFileSource",
         "type": "object"
+      },
+      "ContinueStatus": {
+        "enum": [
+          "dispatched",
+          "queued",
+          "rejected"
+        ],
+        "title": "ContinueStatus",
+        "type": "string"
       },
       "CorrectionStatus": {
         "enum": [
@@ -26413,6 +26510,51 @@
         "title": "PendingApproval",
         "type": "object"
       },
+      "PendingThreadQuestion": {
+        "additionalProperties": false,
+        "description": "The question a child is blocked on (``message_parent`` kind=question) until ``subagent.reply``\nanswers it or ``expires_at`` passes.",
+        "properties": {
+          "question_id": {
+            "title": "Question Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Options"
+          },
+          "asked_at": {
+            "title": "Asked At",
+            "type": "number"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "number"
+          }
+        },
+        "required": [
+          "question_id",
+          "text",
+          "asked_at",
+          "expires_at"
+        ],
+        "title": "PendingThreadQuestion",
+        "type": "object"
+      },
       "PersistedTurn": {
         "additionalProperties": false,
         "description": "Committed SQLite row addresses for the agent's current-turn suffix. Missing ids are\nunproven, never negative acknowledgements. ``complete`` permits retiring the whole local\nturn only when the original turn boundary, every row and final body are still accounted\nfor; compaction, redirects and partial writes conservatively leave it false. Row ids are\nscoped to the owning profile's store, as in ``SessionMessage.row_id``.",
@@ -33799,6 +33941,31 @@
         "title": "ProviderUsageWindow",
         "type": "object"
       },
+      "QueuedContinuation": {
+        "additionalProperties": false,
+        "description": "A ``subagent.continue`` follow-up waiting for a free background slot.",
+        "properties": {
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "goal": {
+            "default": "",
+            "title": "Goal",
+            "type": "string"
+          },
+          "queued_at": {
+            "title": "Queued At",
+            "type": "number"
+          }
+        },
+        "required": [
+          "subagent_id",
+          "queued_at"
+        ],
+        "title": "QueuedContinuation",
+        "type": "object"
+      },
       "QueuedPrompt": {
         "additionalProperties": false,
         "properties": {
@@ -34265,6 +34432,14 @@
           "reloaded"
         ],
         "title": "ReloadMcpStatus",
+        "type": "string"
+      },
+      "ReplyAuthor": {
+        "enum": [
+          "user",
+          "coordinator"
+        ],
+        "title": "ReplyAuthor",
         "type": "string"
       },
       "RepoDiscoveryPolicy": {
@@ -38214,6 +38389,33 @@
             ],
             "default": null,
             "title": "Lazy"
+          },
+          "coordinator_mode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Coordinator Mode"
+          },
+          "capabilities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Capabilities"
           }
         },
         "title": "SessionCwdSetResult",
@@ -39222,9 +39424,86 @@
             ],
             "default": null,
             "title": "Lazy"
+          },
+          "coordinator_mode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Coordinator Mode"
+          },
+          "capabilities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Capabilities"
           }
         },
         "title": "SessionLiveInfo",
+        "type": "object"
+      },
+      "SessionModeSetParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "coordinator": {
+            "title": "Coordinator",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "coordinator"
+        ],
+        "title": "SessionModeSetParams",
+        "type": "object"
+      },
+      "SessionModeSetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "coordinator": {
+            "title": "Coordinator",
+            "type": "boolean"
+          },
+          "pending": {
+            "default": false,
+            "title": "Pending",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "coordinator"
+        ],
+        "title": "SessionModeSetResult",
         "type": "object"
       },
       "SessionMostRecentParams": {
@@ -43881,6 +44160,109 @@
         "title": "StreamDeltaPayload",
         "type": "object"
       },
+      "SubagentContinueParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "subagent_id",
+          "text"
+        ],
+        "title": "SubagentContinueParams",
+        "type": "object"
+      },
+      "SubagentContinueResult": {
+        "additionalProperties": false,
+        "description": "``queued``: every background slot is in use; the follow-up starts when one frees (``position`` in line).\n``rejected`` carries ``error`` (still running, no stored history here, spawning paused, already queued).",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ContinueStatus"
+          },
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "delegation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delegation Id"
+          },
+          "child_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Child Session Id"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Position"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "status",
+          "subagent_id"
+        ],
+        "title": "SubagentContinueResult",
+        "type": "object"
+      },
       "SubagentEventPayload": {
         "additionalProperties": false,
         "description": "``tool_progress._progress_subagent`` \u2014 every ``subagent.*`` frame; identity fields are optional\nbecause older emitters omit them and the TUI spawn tree falls back to flat rendering.",
@@ -44221,7 +44603,7 @@
       },
       "SubagentListResult": {
         "additionalProperties": false,
-        "description": "``delegations``: recently failed async delegation tasks for the session (durable store), newest first.",
+        "description": "``delegations``: recently failed async delegation tasks for the session (durable store), newest first.\n``queued``: this session's ``subagent.continue`` follow-ups still waiting for a slot, oldest first.",
         "properties": {
           "subagents": {
             "items": {
@@ -44236,9 +44618,121 @@
             },
             "title": "Delegations",
             "type": "array"
+          },
+          "queued": {
+            "items": {
+              "$ref": "#/components/schemas/QueuedContinuation"
+            },
+            "title": "Queued",
+            "type": "array"
           }
         },
         "title": "SubagentListResult",
+        "type": "object"
+      },
+      "SubagentMessagePayload": {
+        "additionalProperties": false,
+        "description": "``tools/async_delegation_messages.py::thread_message_annotation``: a running child's ``message_parent``\ndelivered as a parent turn. The same object is that turn's user-row ``display_metadata`` (its\n``display_kind`` is ``async_delegation_message``).",
+        "properties": {
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "display_text": {
+            "title": "Display Text",
+            "type": "string"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ThreadMessageKind"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "delegation_id": {
+            "title": "Delegation Id",
+            "type": "string"
+          },
+          "goal": {
+            "default": "",
+            "title": "Goal",
+            "type": "string"
+          },
+          "sent_at": {
+            "title": "Sent At",
+            "type": "number"
+          },
+          "merged_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Merged Count"
+          },
+          "question_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Question Id"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Options"
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timeout Seconds"
+          }
+        },
+        "required": [
+          "type",
+          "display_text",
+          "message_id",
+          "kind",
+          "text",
+          "subagent_id",
+          "delegation_id",
+          "sent_at"
+        ],
+        "title": "SubagentMessagePayload",
         "type": "object"
       },
       "SubagentOutputTailEntry": {
@@ -44264,6 +44758,183 @@
           "is_error"
         ],
         "title": "SubagentOutputTailEntry",
+        "type": "object"
+      },
+      "SubagentQuestionPayload": {
+        "additionalProperties": false,
+        "description": "Lifecycle of one child question: ``pending`` the moment it is asked (before its parent turn is\ndelivered), then exactly one of ``answered`` / ``expired`` / ``cancelled`` (the child was stopped).",
+        "properties": {
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "question_id": {
+            "title": "Question Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ThreadQuestionStatus"
+          },
+          "goal": {
+            "default": "",
+            "title": "Goal",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Options"
+          },
+          "asked_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Asked At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expires At"
+          },
+          "answered_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Answered By"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Answer"
+          }
+        },
+        "required": [
+          "subagent_id",
+          "question_id",
+          "status"
+        ],
+        "title": "SubagentQuestionPayload",
+        "type": "object"
+      },
+      "SubagentReplyParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "question_id": {
+            "title": "Question Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "answered_by": {
+            "$ref": "#/components/schemas/ReplyAuthor",
+            "default": "user"
+          }
+        },
+        "required": [
+          "session_id",
+          "subagent_id",
+          "question_id",
+          "text"
+        ],
+        "title": "SubagentReplyParams",
+        "type": "object"
+      },
+      "SubagentReplyResult": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "question_id": {
+            "title": "Question Id",
+            "type": "string"
+          },
+          "answered_by": {
+            "$ref": "#/components/schemas/ReplyAuthor"
+          }
+        },
+        "required": [
+          "accepted",
+          "subagent_id",
+          "question_id",
+          "answered_by"
+        ],
+        "title": "SubagentReplyResult",
         "type": "object"
       },
       "SubagentRosterEntry": {
@@ -44442,6 +45113,17 @@
             ],
             "default": null,
             "title": "Child Session Id"
+          },
+          "pending_question": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingThreadQuestion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -45646,6 +46328,24 @@
         },
         "title": "ThemeValues",
         "type": "object"
+      },
+      "ThreadMessageKind": {
+        "enum": [
+          "update",
+          "question"
+        ],
+        "title": "ThreadMessageKind",
+        "type": "string"
+      },
+      "ThreadQuestionStatus": {
+        "enum": [
+          "pending",
+          "answered",
+          "expired",
+          "cancelled"
+        ],
+        "title": "ThreadQuestionStatus",
+        "type": "string"
       },
       "TipShowPayload": {
         "additionalProperties": false,
@@ -51605,6 +52305,18 @@
       ]
     },
     {
+      "name": "subagent.message",
+      "summary": "A running child's interim update or question was delivered as a new parent turn.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/SubagentMessagePayload"
+          }
+        }
+      ]
+    },
+    {
       "name": "subagent.progress",
       "summary": "Batched tool-name progress from a child.",
       "params": [
@@ -51612,6 +52324,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/SubagentEventPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "subagent.question",
+      "summary": "A child asked its parent a question, or that question was answered, expired or cancelled.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/SubagentQuestionPayload"
           }
         }
       ]

@@ -166,7 +166,9 @@ def _lazy_info_route(session: dict, override: dict) -> dict:
     """``session.info``'s model and provider for a not-yet-built session: the client's sticky pick when it
     sent one (so the client does not clobber it), else the profile's default route."""
     model, provider = (override.get("model"), override.get("provider")) if override else _session_default_route(session)
-    return {"model": model, **({"provider": provider} if provider else {})}
+    return {"model": model, **({"provider": provider} if provider else {}),
+            # Coordinator threads: a client gates on these before the agent (and the full info) exists.
+            "coordinator_mode": _coordinator_mode(session), "capabilities": list(THREAD_CAPABILITIES)}
 
 
 def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready: threading.Event | None) -> bool:

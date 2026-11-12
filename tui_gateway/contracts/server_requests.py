@@ -182,6 +182,9 @@ class ApprovalRequestParams(ServerRequestParams):
     smart_denied: bool | None = None
     tool_name: str | None = None
     session_id_hint: str | None = Field(default=None, alias="gateway_session_id")
+    # Set when a delegated child (a background thread) of this session needs the approval.
+    subagent_id: str | None = None
+    goal: str | None = None
     # The approval queue entry carries tool-specific context the card may render; the closed set
     # of keys is owned by tools/approval.py, so it stays open here.
     model_config = Params.model_config | {"extra": "allow"}

@@ -324,6 +324,7 @@ export interface ActiveSubagent {
   status?: string | null
   tool_count?: number | null
   owner_agent_session_id?: string | null
+  pending_question?: unknown | null
   [key: string]: unknown
 }
 export interface DelegationPauseParams {
@@ -572,6 +573,8 @@ export interface SessionLiveInfo {
   system_prompt?: string | null
   credential_warning?: string | null
   lazy?: boolean | null
+  coordinator_mode?: boolean | null
+  capabilities?: string[] | null
   [key: string]: unknown
 }
 /** ``tui_gateway/server.py::_project_info_for_cwd``. */
@@ -2439,10 +2442,11 @@ export interface SessionForeignImportResult {
   session_id: string
   already_imported?: boolean
 }
-/** ``delegations``: recently failed async delegation tasks for the session (durable store), newest first. */
+/** ``delegations``: recently failed async delegation tasks for the session (durable store), newest first. ``queued``: this session's ``subagent.continue`` follow-ups still waiting for a slot, oldest first. */
 export interface SubagentListResult {
   subagents?: SubagentSnapshot[]
   delegations?: FailedDelegation[]
+  queued?: QueuedContinuation[]
 }
 /** ``methods_subagents._SUBAGENT_SNAPSHOT_FIELDS`` projection of one live child record. */
 export interface SubagentSnapshot {
@@ -2458,9 +2462,18 @@ export interface SubagentSnapshot {
   last_tool?: string | null
   accepting_steer?: boolean | null
   child_session_id?: string | null
+  pending_question?: PendingThreadQuestion | null
 }
 /** Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'
+/** The question a child is blocked on (``message_parent`` kind=question) until ``subagent.reply`` answers it or ``expires_at`` passes. */
+export interface PendingThreadQuestion {
+  question_id: string
+  text: string
+  options?: string[] | null
+  asked_at: number
+  expires_at: number
+}
 /** ``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation. */
 export interface FailedDelegation {
   delegation_id: string
@@ -2470,6 +2483,12 @@ export interface FailedDelegation {
   error?: string | null
   dispatched_at?: number | null
   completed_at?: number | null
+}
+/** A ``subagent.continue`` follow-up waiting for a free background slot. */
+export interface QueuedContinuation {
+  subagent_id: string
+  goal?: string
+  queued_at: number
 }
 export interface SubagentRosterResult {
   sessions?: SubagentRosterEntry[]
@@ -2495,6 +2514,37 @@ export interface SubagentTailResult {
   text?: string
   truncated?: boolean
 }
+export interface SubagentReplyParams {
+  session_id: string
+  profile?: string | null
+  subagent_id: string
+  question_id: string
+  text: string
+  answered_by?: ReplyAuthor
+}
+export type ReplyAuthor = 'user' | 'coordinator'
+export interface SubagentReplyResult {
+  accepted: boolean
+  subagent_id: string
+  question_id: string
+  answered_by: ReplyAuthor
+}
+export interface SubagentContinueParams {
+  session_id: string
+  profile?: string | null
+  subagent_id: string
+  text: string
+}
+/** ``queued``: every background slot is in use; the follow-up starts when one frees (``position`` in line). ``rejected`` carries ``error`` (still running, no stored history here, spawning paused, already queued). */
+export interface SubagentContinueResult {
+  status: ContinueStatus
+  subagent_id: string
+  delegation_id?: string | null
+  child_session_id?: string | null
+  position?: number | null
+  error?: string | null
+}
+export type ContinueStatus = 'dispatched' | 'queued' | 'rejected'
 /** ``methods_projects._projects_payload``: every project (archived included) + the active id. */
 export interface ProjectsPayload {
   projects: ProjectInfo[]
@@ -3493,7 +3543,18 @@ export interface SessionCwdSetResult {
   system_prompt?: string | null
   credential_warning?: string | null
   lazy?: boolean | null
+  coordinator_mode?: boolean | null
+  capabilities?: string[] | null
   [key: string]: unknown
+}
+export interface SessionModeSetParams {
+  session_id: string
+  profile?: string | null
+  coordinator: boolean
+}
+export interface SessionModeSetResult {
+  coordinator: boolean
+  pending?: boolean
 }
 export interface SessionCloseParams {
   session_id: string
@@ -5654,6 +5715,8 @@ export interface ApprovalRequestParams {
   smart_denied?: boolean | null
   tool_name?: string | null
   gateway_session_id?: string | null
+  subagent_id?: string | null
+  goal?: string | null
   [key: string]: unknown
 }
 export interface ApprovalResult {
@@ -6164,6 +6227,37 @@ export interface SubagentOutputTailEntry {
   preview: string
   is_error: boolean
 }
+/** ``tools/async_delegation_messages.py::thread_message_annotation``: a running child's ``message_parent`` delivered as a parent turn. The same object is that turn's user-row ``display_metadata`` (its ``display_kind`` is ``async_delegation_message``). */
+export interface SubagentMessagePayload {
+  type: string
+  display_text: string
+  message_id: string
+  kind: ThreadMessageKind
+  text: string
+  subagent_id: string
+  delegation_id: string
+  goal?: string
+  sent_at: number
+  merged_count?: number | null
+  question_id?: string | null
+  options?: string[] | null
+  timeout_seconds?: number | null
+}
+export type ThreadMessageKind = 'update' | 'question'
+/** Lifecycle of one child question: ``pending`` the moment it is asked (before its parent turn is delivered), then exactly one of ``answered`` / ``expired`` / ``cancelled`` (the child was stopped). */
+export interface SubagentQuestionPayload {
+  subagent_id: string
+  question_id: string
+  status: ThreadQuestionStatus
+  goal?: string
+  text?: string | null
+  options?: string[] | null
+  asked_at?: number | null
+  expires_at?: number | null
+  answered_by?: string | null
+  answer?: string | null
+}
+export type ThreadQuestionStatus = 'pending' | 'answered' | 'expired' | 'cancelled'
 /** ``tool_progress._progress_moa_reference``. */
 export interface MoaReferencePayload {
   label: string
@@ -6665,6 +6759,8 @@ export interface RpcMethods {
   'session.interrupt': { params: SessionInterruptParams; result: SessionInterruptResult }
   /** Human-facing stored sessions, most recent first (sub-agent / kanban sources denied). */
   'session.list': { params: SessionListParams; result: SessionListResult }
+  /** Set/clear coordinator mode for one session: the main agent answers directly and hands long work to background threads. Reported as ``session.info.coordinator_mode``; survives resume. Clearing it never touches children that are already running. */
+  'session.mode.set': { params: SessionModeSetParams; result: SessionModeSetResult }
   /** Most recent human-facing session; errors fold into a null session_id. */
   'session.most_recent': { params: SessionMostRecentParams; result: SessionMostRecentResult }
   /** Redirect the active turn (queued for the next turn while the agent is still building). */
@@ -6725,10 +6821,14 @@ export interface RpcMethods {
   'spawn_tree.load': { params: SpawnTreeLoadParams; result: SpawnTreeLoadResult }
   /** Persist a finished delegation tree snapshot under the session's spawn-trees dir. */
   'spawn_tree.save': { params: SpawnTreeSaveParams; result: SpawnTreeSaveResult }
+  /** Run a FINISHED child of this conversation again with a follow-up, on its own stored history and under the same subagent_id; it takes a background slot and reports back like a first run. */
+  'subagent.continue': { params: SubagentContinueParams; result: SubagentContinueResult }
   /** Hard-interrupt one owned child; ``found`` is false when it already finished. */
   'subagent.interrupt': { params: SubagentIdParams; result: SubagentInterruptResult }
   /** Live children owned by this session (other sessions' children never leak). */
   'subagent.list': { params: SessionParams; result: SubagentListResult }
+  /** Answer the question a child of this conversation is waiting on. The first reply wins; a later one (or one for an expired question) answers error 4090 naming how the question ended. */
+  'subagent.reply': { params: SubagentReplyParams; result: SubagentReplyResult }
   /** Per-conversation counts of live delegated children and running background processes, limited to conversations stored in the named profile (launch profile when omitted). Needs no attached session. */
   'subagent.roster': { params: ProfileParams; result: SubagentRosterResult }
   /** Queue steering text into a live delegated child owned by this session. */
@@ -6995,6 +7095,7 @@ export const RPC_METHODS = [
   'session.history',
   'session.interrupt',
   'session.list',
+  'session.mode.set',
   'session.most_recent',
   'session.redirect',
   'session.resume',
@@ -7025,8 +7126,10 @@ export const RPC_METHODS = [
   'spawn_tree.list',
   'spawn_tree.load',
   'spawn_tree.save',
+  'subagent.continue',
   'subagent.interrupt',
   'subagent.list',
+  'subagent.reply',
   'subagent.roster',
   'subagent.steer',
   'subagent.tail',
@@ -7391,8 +7494,12 @@ export interface BackendGatewayEventMap {
   'status.update': StatusUpdatePayload
   /** A child finished (status + observability rollup). */
   'subagent.complete': SubagentEventPayload
+  /** A running child's interim update or question was delivered as a new parent turn. */
+  'subagent.message': SubagentMessagePayload
   /** Batched tool-name progress from a child. */
   'subagent.progress': SubagentEventPayload
+  /** A child asked its parent a question, or that question was answered, expired or cancelled. */
+  'subagent.question': SubagentQuestionPayload
   /** delegate_task accepted a child goal (before the child starts). */
   'subagent.spawn_requested': SubagentEventPayload
   /** A delegated child started running. */
@@ -7491,7 +7598,9 @@ export const GATEWAY_EVENT_TYPES = [
   'skin.changed',
   'status.update',
   'subagent.complete',
+  'subagent.message',
   'subagent.progress',
+  'subagent.question',
   'subagent.spawn_requested',
   'subagent.start',
   'subagent.thinking',

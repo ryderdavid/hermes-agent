@@ -199,6 +199,7 @@ _LONG_HANDLERS = frozenset({
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
     "onboarding.start", "onboarding.state", "subagent.roster",
+    "subagent.continue",  # builds a child agent from stored history (same cost as a delegate_task spawn)
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
@@ -711,11 +712,15 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     interrupt) withdraws the request with ``request.cancel``."""
     from tui_gateway import server_requests
     from tools import approval as _approval
-    payload = _approval_request_payload(data)
+    payload = _approval_request_payload(_with_thread_attribution(data))  # names the delegated child, if one asks
     request_id = str(payload.get("request_id") or "")
     session_key = str((_sessions.get(sid) or {}).get("session_key") or "")
+    if _thread_approval_without_a_person(payload, session_key, asked=False):
+        return
 
     def on_result(result: dict | None) -> None:
+        if result is None and _thread_approval_without_a_person(payload, session_key, asked=True):
+            return
         if result is None:
             # No client can answer this prompt: the request was never sent (the only attached client predates
             # server→client requests) or the client answered -32601 (no handler). Without withdrawing the
@@ -1542,6 +1547,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         info["update_command"] = recommended_update_command()
     if live_agent and (warn := _probe_credentials(agent)):
         info["credential_warning"] = warn
+    info.update(coordinator_mode=_coordinator_mode(sess), capabilities=list(THREAD_CAPABILITIES))  # methods_threads
     return info
 
 
@@ -2023,7 +2029,8 @@ from . import (
     methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account,
     methods_display as _methods_display, methods_display_watch as _methods_display_watch,
     methods_onboarding as _methods_onboarding, methods_i18n as _methods_i18n, methods_machine as _methods_machine,
-    methods_shared_metrics as _methods_shared_metrics, methods_plugin_catalog as _methods_plugin_catalog)
+    methods_shared_metrics as _methods_shared_metrics, methods_plugin_catalog as _methods_plugin_catalog,
+    methods_threads as _methods_threads)
 
 for _m in (
     _session_registry, _agent_factory, _slash_worker_client,
@@ -2036,6 +2043,6 @@ for _m in (
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
     _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding,
-    _methods_i18n, _methods_machine, _methods_shared_metrics, _methods_plugin_catalog):
+    _methods_i18n, _methods_machine, _methods_shared_metrics, _methods_plugin_catalog, _methods_threads):
     _m.register(sys.modules[__name__])
 del _m

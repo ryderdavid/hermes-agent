@@ -139,6 +139,15 @@ session/transport/generation ownership, including for subtree members. Missing
 RPC session authority is rejected; direct in-process `interrupt_subagent(id)`
 retains its legacy unscoped contract.
 
+## Coordinator threads
+
+`methods_threads.py`: `session.mode.set {coordinator}` (flag in `sessions.model_config`, prompt block synced at
+every turn start by `_sync_coordinator_mode`), `subagent.reply` (first reply wins; authority is the conversation,
+like the roster), `subagent.continue` (finished child re-run as an async unit) and the `session.info.capabilities`
+keys. A child's `message_parent` reaches the parent as a turn with `display_kind: async_delegation_message`
+plus a `subagent.message` event; a child's approval is the parent session's `approval` request with
+`subagent_id` + `goal`. Field-level wire contract (the Android app is coded against it): `docs/coordinator-threads.md`.
+
 ## Slash command flow
 
 1. Built-in client commands (`/help`, `/quit`, `/clear`, `/resume`, `/copy`, `/paste`, ...) are

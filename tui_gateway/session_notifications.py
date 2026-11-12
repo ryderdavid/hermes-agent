@@ -638,7 +638,12 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         return
     evt_type = evt.get("type")
     kwargs: dict = {}
-    if evt_type == "async_delegation":
+    from tools.async_delegation_messages import THREAD_MESSAGE_DISPLAY_KIND, is_thread_message, thread_message_annotation
+    # An interim update/question from a running child (message_parent): its own turn kind and annotation.
+    thread_message = thread_message_annotation(evt) if is_thread_message(evt) else None
+    if thread_message is not None:
+        kwargs = {"display_kind": THREAD_MESSAGE_DISPLAY_KIND, "display_metadata": thread_message}
+    elif evt_type == "async_delegation":
         kwargs = {"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
     elif evt_type == "heartbeat":
         # Model-facing scaffolding: the process row on the status stack already says it is running,
@@ -659,6 +664,8 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         release_event_delivery(evt, claim)
         return
     complete_event_delivery(evt, claim)
+    if thread_message is not None:
+        _emit("subagent.message", sid, thread_message)  # the live card for the turn that just started
 
 
 def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, completions=None, *, owned=False) -> bool:
@@ -871,10 +878,31 @@ def _async_delegation_display_metadata(evt: dict) -> dict:
     completed_count = sum(1 for r in results if r.get("status") in {"completed", "success"})
     failed_count = sum(1 for r in results if r.get("status") in {"failed", "error"})
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
+    goals = evt.get("goals") if isinstance(evt.get("goals"), list) else []
+    # One entry per child that ran, so a client renders (and continues) each thread by its id.
+    threads = [{
+        "subagent_id": r["subagent_id"], "task_index": r.get("task_index", 0),
+        "goal": str((goals[r["task_index"]] if isinstance(r.get("task_index"), int) and 0 <= r["task_index"] < len(goals)
+                     else evt.get("goal")) or ""),
+        "status": str(r.get("status") or ""), "tool_count": len(r.get("tool_trace") or []),
+        "duration_seconds": r.get("duration_seconds"),
+    } for r in results if r.get("subagent_id")]
     return {"display_text": async_delegation_display_text(evt),
             "delegation_id": str(evt.get("delegation_id") or ""), "task_count": task_count,
             "completed_count": completed_count or task_count - failed_count, "failed_count": failed_count,
-            **({"duration_seconds": duration} if isinstance(duration, (int, float)) else {})}
+            **({"duration_seconds": duration} if isinstance(duration, (int, float)) else {}),
+            **({"threads": threads} if threads else {})}
+
+
+def _emit_thread_question(route: dict, payload: dict) -> None:
+    """``subagent.question`` for the session that owns the asking child: the UI tab that dispatched it, else
+    (a reconnect reminted the id) the live session on the same conversation."""
+    sid, key = str(route.get("origin_ui_session_id") or ""), str(route.get("session_key") or "")
+    with _sessions_lock:
+        if sid not in _sessions:
+            sid = next((s for s, rec in _sessions.items() if key and str(rec.get("session_key") or "") == key), "")
+    if sid:
+        _emit("subagent.question", sid, payload)
 
 
 _desktop_ui_wired = False
@@ -900,6 +928,8 @@ def _wire_desktop_sinks() -> None:
     if getattr(process_registry, "on_close", None) is None:
         process_registry.on_close = lambda session, pid: _emit("terminal.close", _owner_sid(session), {"process_id": pid})
     if not _desktop_ui_wired:
+        from tools import async_delegation_messages
+        async_delegation_messages.set_question_notifier(_emit_thread_question)
         with contextlib.suppress(Exception):
             from tools import desktop_ui
             desktop_ui.set_emitter(lambda sid, event, payload: _emit(event, sid, payload))

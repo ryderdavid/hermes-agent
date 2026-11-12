@@ -386,6 +386,7 @@ class ActiveSubagent(OpenModel):
     status: str | None = None
     tool_count: int | None = None
     owner_agent_session_id: str | None = None
+    pending_question: JsonValue | None = None  # PendingThreadQuestion while the child waits for an answer
 
 
 class DelegationStatusResult(Result):

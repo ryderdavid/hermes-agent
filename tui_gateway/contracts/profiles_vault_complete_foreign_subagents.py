@@ -657,6 +657,17 @@ method("session.foreign.import", params=SessionForeignIdParams, result=SessionFo
 # ── subagents (methods_subagents) ─────────────────────────────────────────────────────────────
 
 
+class PendingThreadQuestion(Result):
+    """The question a child is blocked on (``message_parent`` kind=question) until ``subagent.reply``
+    answers it or ``expires_at`` passes."""
+
+    question_id: str
+    text: str
+    options: list[str] | None = None
+    asked_at: float
+    expires_at: float
+
+
 class SubagentSnapshot(Result):
     """``methods_subagents._SUBAGENT_SNAPSHOT_FIELDS`` projection of one live child record."""
 
@@ -673,6 +684,8 @@ class SubagentSnapshot(Result):
     accepting_steer: bool | None = None
     #: The child's own stored session (``session.transcript`` reads it by ``subagent_id``); None until it has one.
     child_session_id: str | None = None
+    #: Set while the child waits for an answer: the thread "needs you".
+    pending_question: PendingThreadQuestion | None = None
 
 
 class FailedDelegation(Result):
@@ -687,11 +700,21 @@ class FailedDelegation(Result):
     completed_at: float | None = None
 
 
+class QueuedContinuation(Result):
+    """A ``subagent.continue`` follow-up waiting for a free background slot."""
+
+    subagent_id: str
+    goal: str = ""
+    queued_at: float
+
+
 class SubagentListResult(Result):
-    """``delegations``: recently failed async delegation tasks for the session (durable store), newest first."""
+    """``delegations``: recently failed async delegation tasks for the session (durable store), newest first.
+    ``queued``: this session's ``subagent.continue`` follow-ups still waiting for a slot, oldest first."""
 
     subagents: list[SubagentSnapshot] = Field(default_factory=list)
     delegations: list[FailedDelegation] = Field(default_factory=list)
+    queued: list[QueuedContinuation] = Field(default_factory=list)
 
 
 method("subagent.list", params=SessionParams, result=SubagentListResult,
@@ -737,3 +760,53 @@ class SubagentTailResult(Result):
 
 method("subagent.tail", params=SubagentIdParams, result=SubagentTailResult,
        doc="Last 16KB of an owned child's live transcript.")
+
+
+class ReplyAuthor(WireEnum):
+    user = "user"
+    coordinator = "coordinator"
+
+
+class SubagentReplyParams(SubagentIdParams):
+    question_id: str
+    text: str
+    answered_by: ReplyAuthor = ReplyAuthor.user
+
+
+class SubagentReplyResult(Result):
+    accepted: bool
+    subagent_id: str
+    question_id: str
+    answered_by: ReplyAuthor
+
+
+method("subagent.reply", params=SubagentReplyParams, result=SubagentReplyResult,
+       doc="Answer the question a child of this conversation is waiting on. The first reply wins; a later one "
+           "(or one for an expired question) answers error 4090 naming how the question ended.")
+
+
+class SubagentContinueParams(SubagentIdParams):
+    text: str
+
+
+class ContinueStatus(WireEnum):
+    dispatched = "dispatched"
+    queued = "queued"
+    rejected = "rejected"
+
+
+class SubagentContinueResult(Result):
+    """``queued``: every background slot is in use; the follow-up starts when one frees (``position`` in line).
+    ``rejected`` carries ``error`` (still running, no stored history here, spawning paused, already queued)."""
+
+    status: ContinueStatus
+    subagent_id: str
+    delegation_id: str | None = None
+    child_session_id: str | None = None
+    position: int | None = None
+    error: str | None = None
+
+
+method("subagent.continue", params=SubagentContinueParams, result=SubagentContinueResult,
+       doc="Run a FINISHED child of this conversation again with a follow-up, on its own stored history and "
+           "under the same subagent_id; it takes a background slot and reports back like a first run.")
