@@ -1923,6 +1923,13 @@ delegation:
                                               # or auto-approve "once" (true) instead of blocking on stdin.
                                               # The parent TUI owns stdin, so blocking would deadlock; non-interactive resolution is required.
                                               # Both choices emit a logger.warning audit line. Flip to true only for cron/batch pipelines.
+  # subagent_approval: "ask"                  # Gateway sessions (TUI/Desktop/app): "ask" (default) raises a subagent's approval on the
+                                              # parent chat's channel, naming the thread; with no client attached that can answer,
+                                              # subagent_auto_approve decides. "auto" never asks a person.
+  # question_timeout: 900                     # Seconds a background subagent waits for an answer to a message_parent question
+                                              # before it resumes with {"answered": false} (default: 900).
+  # update_interval_seconds: 60               # Least seconds between two message_parent updates of one subagent; extra updates
+                                              # are merged into its next delivery (default: 60, 0 = no limit).
   # inherit_mcp_toolsets: true                # When explicit child toolsets are narrowed, also keep the parent's MCP toolsets (default: true). Set false for strict intersection.
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)

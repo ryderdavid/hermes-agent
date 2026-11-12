@@ -1186,7 +1186,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
         self.assertEqual(
             MockAgent.call_args[1]["enabled_toolsets"],
-            ["web", "browser"],
+            ["web", "browser", "thread_messaging"],  # + the child-only message_parent toolset
         )
 
 

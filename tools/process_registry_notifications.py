@@ -281,6 +281,9 @@ def _format_async_delegation(evt: dict) -> str:
     """Self-contained re-injection for an async-delegation completion: the FULL
     original task source (goal, context, toolsets, role, model), dispatch time, status
     and result, so an agent deep in unrelated context can act on it or re-dispatch."""
+    from tools.async_delegation_messages import format_thread_message, is_thread_message
+    if is_thread_message(evt):  # an interim update or question from a still-running child (message_parent)
+        return format_thread_message(evt)
     deleg_id = evt.get("delegation_id", "unknown")
     completed_at = evt.get("completed_at") or time.time()
     if evt.get("task_failure_notice"):
@@ -319,6 +322,9 @@ def _format_async_delegation(evt: dict) -> str:
 
 def async_delegation_display_text(evt: dict) -> str:
     """Compact UI title; the separate model notification retains all task evidence."""
+    from tools.async_delegation_messages import is_thread_message, thread_message_display_text
+    if is_thread_message(evt):
+        return thread_message_display_text(evt)
     raw_results = evt.get("results")
     results = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
     results = results or [evt]

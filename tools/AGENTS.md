@@ -179,6 +179,9 @@ Esc, the Desktop/TUI Stop button, a message that interrupts, `session.interrupt`
 and Desktop process stop) and session close/reset end them. Depth>0 delegations are always synchronous
 (`_model_background_value`), so a stop recurses through the child's own `_active_children` fan-out; an
 interrupted entry's `summary` is the child's last real assistant text (`_build_result_entry`). API: `website/docs/developer-guide/subagent-lifecycle-api.md`.
+**Thread messages:** first-level children get `message_parent` (`thread_messaging` toolset): an update/question is a
+`type="async_delegation"` queue event carrying `thread_message`, with a ledger row of its own (`async_delegation_messages.py`);
+`delegate_tool_continue.py` re-dispatches a finished child under its `subagent_id`. Wire: `docs/coordinator-threads.md`.
 
 ## Tests
 

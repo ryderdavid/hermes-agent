@@ -60,6 +60,32 @@ def _get_subagent_approval_callback():
         return _subagent_auto_approve
     return _subagent_auto_deny
 
+# ── Subagent approvals raised on the parent session (delegation.subagent_approval) ──
+# A gateway session's children share its approval queue, so a child's dangerous command is asked on the
+# parent's channel. The child run binds this so the request can name the thread that needs it.
+_SUBAGENT_APPROVAL: ContextVar[Optional[dict]] = ContextVar("hermes_subagent_approval", default=None)
+
+@contextmanager
+def subagent_approval_scope(subagent_id: Optional[str], goal: str) -> Iterator[None]:
+    """Name the child whose tools run in this context (``subagent_approval_attribution``)."""
+    token = _SUBAGENT_APPROVAL.set(
+        {"subagent_id": subagent_id, "goal": " ".join(str(goal or "").split())[:200]} if subagent_id else None)
+    try:
+        yield
+    finally:
+        _SUBAGENT_APPROVAL.reset(token)
+
+def subagent_approval_attribution() -> dict:
+    """``{subagent_id, goal}`` when the calling context is a delegated child's run, else ``{}``."""
+    return dict(_SUBAGENT_APPROVAL.get() or {})
+
+def subagent_approval_mode() -> str:
+    """delegation.subagent_approval: ``ask`` (default) raises a child's approval on the parent session's
+    channel when a client there can answer; ``auto`` never asks a person. Whenever nobody is asked,
+    delegation.subagent_auto_approve decides (deny unless true)."""
+    mode = str(_cfg().get("subagent_approval") or "ask").strip().lower()
+    return mode if mode in ("ask", "auto") else "ask"
+
 def _knob(key: str, env_var: Optional[str], parse, default, invalid_msg: str):
     """delegation.<key> > <env_var> > default. A config value that fails ``parse`` logs ``invalid_msg`` (``%r`` = the
     value) and yields the default; an env value that fails is silently ignored."""

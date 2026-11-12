@@ -862,6 +862,31 @@ def has_live_for_session(session_key: str = "", origin_ui_session_id: str = "", 
     return bool(_session_records(_LIVE_STATES, session_key, origin_ui_session_id, parent_session_id))
 
 
+def has_free_slot(max_async_children: int) -> bool:
+    """Whether a new unit would be admitted right now (a later dispatch can still lose the race)."""
+    with _records_lock:
+        return len({r.get("slot_key") or r["delegation_id"] for r in _records.values()
+                    if r.get("status") in _ACTIVE_STATES}) < max_async_children
+
+
+# Called (no arguments, on the finalizing thread) each time a unit leaves the running set and its slot
+# frees: how queued thread continuations start (tools/delegate_tool_continue.py).
+_slot_listeners: list[Callable[[], None]] = []
+
+
+def add_slot_listener(listener: Callable[[], None]) -> None:
+    if listener not in _slot_listeners:
+        _slot_listeners.append(listener)
+
+
+def _notify_slot_freed() -> None:
+    for listener in tuple(_slot_listeners):
+        try:
+            listener()
+        except Exception:
+            logger.warning("Async delegation slot listener failed", exc_info=True)
+
+
 def _new_delegation_id() -> str:
     return f"deleg_{uuid.uuid4().hex[:8]}"
 
@@ -1107,6 +1132,7 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
             _records[delegation_id].pop("_context", None)
             _records[delegation_id].pop("_finished_children", None)
         _prune_completed_locked()
+    _notify_slot_freed()
 
 
 def _push_completion_event(record: dict[str, Any], result: dict[str, Any], status: str) -> None:

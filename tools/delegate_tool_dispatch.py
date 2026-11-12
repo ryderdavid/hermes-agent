@@ -491,6 +491,7 @@ def _dispatch_background(batch: _Batch) -> str:
         # unsubmitted units must still receive parent stops while a fallback runs.
         for _, _, child in unit.children:
             _detach_child(parent_agent, child)
+            child._async_unit_id = unit_id  # routes the child's message_parent events (async_delegation_messages)
         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
         if dispatch.get("status") == "dispatched":
             slot_key = slot_key or dispatch["delegation_id"]

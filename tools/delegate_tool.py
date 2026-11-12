@@ -230,6 +230,8 @@ def _build_child_agent(
     override_reasoning_effort: Any = None,
     profile_home: Optional[Path] = None,
     override_service_tier: Optional[str] = None,  # a route's checked speed tier (tools/delegate_tool_tuning.py)
+    # A continued thread keeps its id (tools/delegate_tool_continue.py); None mints a fresh one.
+    subagent_id: Optional[str] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair. ``profile_home`` builds (and later runs,
@@ -246,7 +248,7 @@ def _build_child_agent(
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
-    subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
+    subagent_id = subagent_id or f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
 
     # General delegation behavior (reasoning, compression, capabilities) stays
@@ -254,6 +256,9 @@ def _build_child_agent(
     # as auxiliary.review.
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    # Only a first-level child reports to a chat: it may send interim updates and questions (message_parent).
+    child_toolsets = [t for t in child_toolsets if t != "thread_messaging"] + (
+        ["thread_messaging"] if child_depth == 1 else [])
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
@@ -423,6 +428,8 @@ def _run_single_child(
 
         duration = run.elapsed()
         entry = _build_result_entry(child, result, task_index, duration, schema)
+        if _subagent_id:
+            entry["subagent_id"] = _subagent_id  # the id a client continues or opens the thread by
         run.append_sibling_write_reminder(entry)
         run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
@@ -437,6 +444,8 @@ def _run_single_child(
             preview=str(exc), summary=str(exc), status="failed",
         )
     finally:
+        from tools.async_delegation_messages import child_finished
+        child_finished(_subagent_id)  # held updates reach the parent before this child's completion
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 
 
@@ -465,6 +474,7 @@ def _build_children(
     task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], routes: list[Any], *,
     top_role: str, max_iterations: int, parent_agent,
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[list[Optional[list[str]]]] = None,
+    subagent_ids: Optional[list[Optional[str]]] = None,  # per task: the id a continued thread keeps
 ) -> tuple[list[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe), each on its task's route;
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -485,6 +495,7 @@ def _build_children(
                 toolsets=None,  # always inherit the parent's toolsets
                 model=route.creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_route_overrides(route),
+                subagent_id=subagent_ids[i] if subagent_ids and i < len(subagent_ids) else None,
             )
         except ValueError as exc:
             # An owner refusal can land mid-batch: the siblings built so far hold reservations.
@@ -581,7 +592,7 @@ def delegate_task(
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
     if normalized_action and normalized_action != "spawn":
-        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
+        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, stop, or reply.")
 
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
@@ -856,11 +867,12 @@ DELEGATE_TASK_SCHEMA = {
                 "'list' = ids/goals/status/transcripts; 'steer' = queue "
                 "course-correction text into one child (subagent_id + "
                 "message) without stopping it; 'stop' = end one child "
-                "early (subagent_id; partial result still returns). "
+                "early (subagent_id; partial result still returns); 'reply' = "
+                "answer the question a child is waiting on (subagent_id + message). "
                 "Control actions return immediately; goal/tasks are ignored unless spawning.",
-                enum=["spawn", "list", "steer", "stop"],
+                enum=["spawn", "list", "steer", "stop", "reply"],
             ),
-            "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
+            "subagent_id": _p("string", "Target for action='steer'/'stop'/'reply' (ids from the spawn response or action='list')."),
             "message": _p(
                 "string",
                 "For action='steer': the course correction, appended to "

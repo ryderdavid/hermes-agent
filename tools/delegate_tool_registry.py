@@ -195,7 +195,7 @@ def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) ->
 
 # Model-facing control actions accepted by delegate_task(action=...).
 # "spawn" (or omitted) keeps the historical spawn semantics.
-_CONTROL_ACTIONS = frozenset({"list", "steer", "stop"})
+_CONTROL_ACTIONS = frozenset({"list", "steer", "stop", "reply"})
 
 def _resolve_session_lineage(session_id: Optional[str], parent_agent: Any) -> str:
     """Tip of a session id's compression lineage via the parent's live SessionDB (best-effort; input unchanged when
@@ -281,6 +281,8 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
         )
     if action == "steer" and not (message or "").strip():
         return tool_error("action='steer' requires a non-empty 'message' describing the course correction.")
+    if action == "reply":
+        return _reply_to_thread_question(sid, message)
     outcome = _CONTROL_OUTCOMES.get(action)
     if outcome is None:
         return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, or stop.")
@@ -289,6 +291,20 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
     if ok:
         return json.dumps({"action": action, "subagent_id": sid, "status": status, "note": note}, ensure_ascii=False)
     return tool_error(failure.format(sid=sid))
+
+def _reply_to_thread_question(sid: str, message: Optional[str]) -> str:
+    """The coordinator answers the question a child is blocked on (``message_parent`` kind=question)."""
+    from tools.async_delegation_messages import pending_question_id, reply_to_question
+    if not (message or "").strip():
+        return tool_error("action='reply' requires a non-empty 'message': the answer to the thread's question.")
+    question_id = pending_question_id(sid)
+    if question_id is None:
+        return tool_error(f"Subagent '{sid}' has no open question (it was answered, or its wait limit passed).")
+    verdict = reply_to_question(sid, question_id, message.strip(), "coordinator")
+    if not verdict["accepted"]:
+        return tool_error(verdict["error"])
+    return json.dumps({"action": "reply", "subagent_id": sid, "question_id": question_id, "status": "delivered",
+                       "note": "The thread has your answer and resumed."}, ensure_ascii=False)
 
 # action -> (success status, success note, failure error template)
 _CONTROL_OUTCOMES = {
