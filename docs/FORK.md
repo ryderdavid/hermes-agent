@@ -6,6 +6,11 @@ It carries personal gateway customizations (currently: semantic tool-activity
 labels on gateway events for the Android app) while staying rebased on
 upstream `main`.
 
+Fork-only gateway features and their wire contracts:
+
+- Coordinator threads (coordinator mode, thread messages, continue, thread
+  approvals): [`docs/coordinator-threads.md`](coordinator-threads.md).
+
 ## Why a fork
 
 The Android app (`ryderdavid/hermes-android`) renders gateway `tool.*` events
