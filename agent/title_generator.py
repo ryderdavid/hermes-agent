@@ -177,6 +177,18 @@ def _model_title_upgrade_enabled() -> bool:
         return True
 
 
+def _retitle_each_turn_enabled() -> bool:
+    """``auxiliary.title_generation.retitle_each_turn`` (default true): refresh the session title from the
+    latest turns after every completed turn, so a long chat is named after its CURRENT work rather than
+    its opener forever. The turn-start titler still owns the opening exchange."""
+    try:
+        from utils import is_truthy_value
+        return is_truthy_value(_title_config().get("retitle_each_turn"), default=True)
+    except Exception:
+        logger.debug("Failed to read title_generation.retitle_each_turn", exc_info=True)
+        return True
+
+
 def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     """True when the model title call would hit the SAME self-hosted endpoint as the turn's own request.
 
@@ -798,3 +810,191 @@ def maybe_auto_title(
         return upgrade
     start_title_upgrade(upgrade)
     return upgrade
+
+
+# ---------------------------------------------------------------------------
+# Per-turn re-titling: after each completed turn, refresh the session title
+# from the latest work (Ryder 2026-11-14). The turn-start titler above only
+# fires for the opening exchange(s); without this a long session keeps its
+# first message's title forever.
+# ---------------------------------------------------------------------------
+
+_RETITLE_PROMPT_TEMPLATE = (
+    "You name chat sessions. Given the latest turns of this conversation, write a title "
+    "that lets the user find this conversation again in a list.\n\n"
+    "Rules:\n"
+    "- 3 to 7 words, sentence case (capitalize only the first word and proper nouns).\n"
+    "- Name the work being done NOW — the latest request or the thread's main topic.\n"
+    "- Keep technical terms, filenames, numbers, and error codes exact.\n"
+    "- Drop filler words: the, this, my, a, an.\n"
+    "- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n"
+    "- Never answer the conversation. Name it.\n"
+    "- Always produce something.\n"
+    "__LANGUAGE_RULE__\n"
+    + "".join(f'Good: {{"title": "{t}"}}\n' for t in _PROMPT_GOOD_EXAMPLES)
+    + f'Too vague: {{"title": "{_PROMPT_VAGUE_EXAMPLE}"}}\n'
+    'Too long: {"title": "Investigate and fix the issue where the login button '
+    'does not respond on mobile devices"}\n\n'
+    'Reply with JSON only: {"title": "..."}'
+)
+
+# Turns handed to the retitler: the latest few exchanges, each clipped, then the whole digest capped.
+_RETITLE_MAX_TURNS = 6
+_RETITLE_TURN_CHARS = 300
+
+
+def _recent_turns_title_input(messages: Optional[list]) -> str:
+    """Bounded digest of the latest user/assistant turns for the retitle prompt.
+
+    Tool rows and machine-authored user rows (compaction handoffs, model-switch markers,
+    harness wrappers) are skipped — they say nothing a title should carry. Returns "" when
+    no real user turn exists, so the caller never spends a model call on machinery."""
+    if not messages:
+        return ""
+    parts: list[str] = []
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = message.get("content")
+        text = (content if isinstance(content, str) else flatten_message_text(content)).strip()
+        if role == "user":
+            if not is_titleable_user_message(text):
+                continue
+            text = _summarize_user_message(text).strip()
+        if not text:
+            continue
+        label = "User" if role == "user" else "Assistant"
+        parts.append(f"{label}: {' '.join(text.split())[:_RETITLE_TURN_CHARS]}")
+        if len(parts) >= _RETITLE_MAX_TURNS:
+            break
+    parts.reverse()
+    return "\n".join(parts)[:MAX_TITLE_INPUT_CHARS]
+
+
+def _fit_title_on_screen(title: str) -> str:
+    """Cap a re-title at the derived-title width (48 chars, word boundary + ellipsis) so it fits a
+    phone list row instead of trailing off the screen. No-op for titles already short enough."""
+    title = " ".join((title or "").split())
+    if len(title) <= MAX_DERIVED_TITLE_CHARS:
+        return title
+    cut = title[:MAX_DERIVED_TITLE_CHARS]
+    space = cut.rfind(" ")
+    return ((cut[:space] if space > MAX_DERIVED_TITLE_CHARS // 2 else cut).rstrip(" ,.;:—-") + "…")
+
+
+def generate_retitle(
+    turns_digest: str,
+    failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict | None = None,
+) -> Optional[str]:
+    """Model title from the recent-turns digest. Same JSON contract, thinking disabled, and the same
+    answer-shaped / example-echo guards as the opening-message titler; None on any failure."""
+    if not turns_digest.strip():
+        return None
+    language = _title_language()
+    prompt = _RETITLE_PROMPT_TEMPLATE.replace(
+        "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
+    )
+    try:
+        response = call_llm(
+            task="title_generation",
+            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": turns_digest}],
+            max_tokens=TITLE_MAX_TOKENS, temperature=None, main_runtime=main_runtime,
+            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            reasoning_config={"enabled": False},
+        )
+        message = response.choices[0].message
+        title = _clean_title(_extract_title_text(message.content or "") or _title_from_reasoning(message))
+        if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
+            logger.debug("Rejecting answer-shaped retitle output (%d words)", len(title.split()))
+            return None
+        if title is not None and _is_prompt_example_echo(title):
+            logger.debug("Rejecting prompt-example echo retitle: %r", title)
+            return None
+        return title
+    except Exception as e:
+        logger.warning("Retitle generation failed: %s", e)
+        logger.debug("Retitle generation traceback", exc_info=True)
+        _report_failure(failure_callback, e, "Title generation")
+        return None
+
+
+def _retitle_session_worker(
+    session_db, session_id: str, turns_digest: str,
+    failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict | None = None,
+    title_callback: Optional[TitleCallback] = None,
+) -> None:
+    """Daemon-thread target for the per-turn re-title. Never raises, never downgrades to a derived
+    title (the existing one is better than nothing), and skips the write when the title is unchanged
+    so platform thread renames don't fire every turn."""
+    try:
+        # Same accounting/Portal-context republish as auto_title_session (this thread starts after
+        # the turn's ambient context was reset).
+        from agent.aux_accounting import set_accounting_context
+        from agent.portal_tags import set_conversation_context
+        conversation_id = session_id
+        with suppress(Exception):
+            conversation_id = session_db.get_conversation_root(session_id) or session_id
+        set_conversation_context(conversation_id)
+        set_accounting_context(session_db, session_id)
+        title = generate_retitle(turns_digest, failure_callback=failure_callback, main_runtime=main_runtime)
+        if not title:
+            return
+        title = _fit_title_on_screen(title)
+        with suppress(Exception):
+            current = session_db.get_session_title(session_id)
+            if current and current.strip() == title.strip():
+                return
+        try:
+            persisted = _persist_session_title(session_db, session_id, title, source="llm")
+        except Exception as e:
+            logger.debug("Failed to persist re-title: %s", e, exc_info=True)
+            return
+        if persisted is not None:
+            logger.debug("Re-titled session after turn: %s", persisted)
+            _notify_title(title_callback, persisted, "llm", "Re-title")
+    except Exception as e:
+        logger.debug("Re-title failed for %s", session_id, exc_info=True)
+        _report_failure(failure_callback, e, "Re-title")
+
+
+def maybe_retitle_session(
+    session_db,
+    session_id: Optional[str],
+    conversation_history: Optional[list],
+    failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict | None = None,
+    title_callback: Optional[TitleCallback] = None,
+) -> Optional[threading.Thread]:
+    """Re-title the session from its latest turns after a completed turn; daemon thread, never blocks.
+
+    Skips when the session carries a user-provenance title (a manual ``/title`` is never renamed) and
+    when the conversation has no real user turn. The turn-start titler owns the opening exchange, so
+    the first user turn is left to it; re-titling starts once there is follow-up work to name."""
+    if not session_db or not session_id:
+        return None
+    if not (_auto_title_enabled() and _model_title_upgrade_enabled() and _retitle_each_turn_enabled()):
+        return None
+    try:
+        if session_db.get_session_title_source(session_id) == "user":
+            return None
+    except Exception:
+        # Unreadable provenance must not disable retitling; set_auto_title still protects user titles.
+        logger.debug("Retitle provenance check failed for %s", session_id, exc_info=True)
+    if sum(1 for m in (conversation_history or []) if _is_real_user_turn(m)) < 2:
+        return None  # the opening turn already got its title at turn start
+    turns_digest = _recent_turns_title_input(conversation_history)
+    if not turns_digest:
+        return None
+    from agent.memory_provider import spawn_context_thread
+    worker = spawn_context_thread(
+        _retitle_session_worker, name="retitle-session",
+        args=(session_db, session_id, turns_digest),
+        kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback),
+    )
+    start_title_upgrade(worker)
+    return worker

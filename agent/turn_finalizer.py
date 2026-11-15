@@ -616,6 +616,30 @@ def _mirror_turn_to_memory(
             )
 
 
+def _maybe_retitle_after_turn(agent, messages, completed: bool) -> None:
+    """Re-title the session from the latest turns after a completed turn (daemon thread).
+
+    Cron and subagent runs name themselves; a manual ``/title`` is never renamed
+    (``maybe_retitle_session`` checks provenance, and ``set_auto_title`` enforces it)."""
+    if not completed:
+        return
+    if str(getattr(agent, "platform", "") or "").lower() in ("cron", "subagent"):
+        return
+    from agent.title_generator import maybe_retitle_session
+    maybe_retitle_session(
+        getattr(agent, "_session_db", None), getattr(agent, "session_id", None), messages,
+        failure_callback=(
+            getattr(agent, "_title_failure_callback", None)
+            or getattr(agent, "_emit_auxiliary_failure", None)
+        ),
+        main_runtime={
+            k: getattr(agent, k, None)
+            for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")
+        },
+        title_callback=getattr(agent, "_on_session_title", None),
+    )
+
+
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
@@ -699,6 +723,12 @@ def finalize_turn(
     # self-hosted endpoint with the main request (#117296) may go out now.
     from agent.turn_context import start_deferred_title_upgrade
     _guarded_cleanup("start_deferred_title_upgrade", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)
+    # After a completed turn, refresh the session title from the latest work (daemon thread, off the
+    # critical path; the turn-start titler only names the opening exchange).
+    _guarded_cleanup(
+        "maybe_retitle_session", lambda: _maybe_retitle_after_turn(agent, messages, completed),
+        _cleanup_errors, logger,
+    )
     # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
     _guarded_cleanup(
         "save_trajectory",

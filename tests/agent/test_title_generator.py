@@ -1,5 +1,7 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
+import json
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +15,7 @@ from agent.title_generator import (
     auto_title_session,
     is_titleable_user_message,
     maybe_auto_title,
+    maybe_retitle_session,
     wait_for_title_upgrades,
     _title_language,
 )
@@ -898,3 +901,106 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestRetitleSession:
+    """Per-turn re-titling: after a completed turn the session is renamed from its latest work."""
+
+    HISTORY = [
+        {"role": "user", "content": "Fix the login button on mobile"},
+        {"role": "assistant", "content": "I patched the tap target and the theme."},
+        {"role": "user", "content": "Now restyle the project chats tab to Material Expressive"},
+        {"role": "assistant", "content": "Done — rows use ChatMark and date groups now."},
+    ]
+
+    def _resp(self, title):
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = json.dumps({"title": title})
+        return resp
+
+    def test_retitles_from_recent_turns(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        db.set_auto_title("sess-1", "Fix the login button on mobile", source="derived")
+        seen = []
+        with patch("agent.title_generator.call_llm", return_value=self._resp("Restyle project chats tab")) as call_llm:
+            worker = maybe_retitle_session(
+                db, "sess-1", self.HISTORY,
+                title_callback=lambda title, source: seen.append((title, source)),
+            )
+            assert worker is not None
+            wait_for_title_upgrades()
+        assert db.get_session_title("sess-1") == "Restyle project chats tab"
+        assert db.get_session_title_source("sess-1") == "llm"
+        assert seen == [("Restyle project chats tab", "llm")]
+        # The prompt carries the latest exchange, not just the opener.
+        digest = call_llm.call_args.kwargs["messages"][1]["content"]
+        assert "restyle the project chats tab" in digest.lower()
+        assert "Material Expressive" in digest
+
+    def test_user_title_is_never_retitled(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        db.set_session_title("sess-1", "My manual name")
+        with patch("agent.title_generator.call_llm") as call_llm:
+            assert maybe_retitle_session(db, "sess-1", self.HISTORY) is None
+            call_llm.assert_not_called()
+        assert db.get_session_title("sess-1") == "My manual name"
+
+    def test_opening_turn_is_left_to_the_turn_start_titler(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        with patch("agent.title_generator.call_llm") as call_llm:
+            assert maybe_retitle_session(db, "sess-1", self.HISTORY[:2]) is None
+            call_llm.assert_not_called()
+
+    def test_machine_only_history_spends_no_model_call(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        history = [{"role": "tool", "content": "ls output"}]
+        with patch("agent.title_generator.call_llm") as call_llm:
+            assert maybe_retitle_session(db, "sess-1", history) is None
+            call_llm.assert_not_called()
+
+    def test_retitle_is_capped_to_fit_on_screen(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        long_title = "Restyle the project detail chats tab to the new Material Expressive style"
+        with patch("agent.title_generator.call_llm", return_value=self._resp(long_title)):
+            maybe_retitle_session(db, "sess-1", self.HISTORY)
+            wait_for_title_upgrades()
+        title = db.get_session_title("sess-1")
+        assert len(title) <= MAX_TITLE_INPUT_CHARS and len(title) <= 49
+        assert title.endswith("…")
+
+    def test_unchanged_title_skips_write_and_callback(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        db.set_auto_title("sess-1", "Restyle project chats tab", source="llm")
+        seen = []
+        with patch("agent.title_generator.call_llm", return_value=self._resp("Restyle project chats tab")):
+            maybe_retitle_session(db, "sess-1", self.HISTORY,
+                                  title_callback=lambda title, source: seen.append((title, source)))
+            wait_for_title_upgrades()
+        assert seen == []  # no write, no platform thread rename churn
+
+    def test_model_failure_keeps_existing_title(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        db.set_auto_title("sess-1", "Fix the login button on mobile", source="llm")
+        with patch("agent.title_generator.call_llm", side_effect=RuntimeError("aux down")):
+            maybe_retitle_session(db, "sess-1", self.HISTORY)
+            wait_for_title_upgrades()
+        assert db.get_session_title("sess-1") == "Fix the login button on mobile"
+
+    def test_retitle_each_turn_disabled_spawns_no_thread(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        config = {"auxiliary": {"title_generation": {"retitle_each_turn": False}}}
+        with patch("hermes_cli.config.load_config_readonly", return_value=config), \
+             patch("agent.memory_provider.spawn_context_thread") as thread, \
+             patch("agent.title_generator.call_llm") as call_llm:
+            assert maybe_retitle_session(db, "sess-1", self.HISTORY) is None
+            thread.assert_not_called()
+            call_llm.assert_not_called()
